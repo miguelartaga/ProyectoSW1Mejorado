@@ -89,28 +89,16 @@ TEMPLATES = [
 ASGI_APPLICATION = 'backend.asgi.application'
 
 # Database
-RENDER_DATABASE_URL = os.environ.get('DATABASE_URL')
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if not DATABASE_URL:
+    raise RuntimeError('DATABASE_URL is required')
 
-if RENDER_DATABASE_URL:
-    DATABASES = {
-        'default': dj_database_url.config(
-            default=RENDER_DATABASE_URL,
-            conn_max_age=600
-        )
-    }
-else:
-    # Fallback para desarrollo local (si DATABASE_URL no está presente)
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': os.environ.get('DB_NAME', 'traductordb'),
-            'USER': os.environ.get('DB_USER', 'postgres'),
-            'PASSWORD': os.environ.get('DB_PASSWORD', '123456789'),
-            'HOST': os.environ.get('DB_HOST', 'localhost'),
-            'PORT': os.environ.get('DB_PORT', '5432'),
-        }
-    }
-
+DATABASES = {
+    'default': dj_database_url.config(
+        default=DATABASE_URL,
+        conn_max_age=600
+    )
+}
 
 # Password validation... (Sin cambios)
 AUTH_PASSWORD_VALIDATORS = [

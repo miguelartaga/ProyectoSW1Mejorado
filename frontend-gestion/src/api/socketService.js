@@ -1,6 +1,6 @@
 class WebSocketService {
   static instance = null;
-  callbacks = {}; // Almacena funciones para actualizar la UI
+  callbacks = {}; // Almacena funciones para actualizar la UI por tipo
 
   static getInstance() {
     if (!WebSocketService.instance) {
@@ -68,13 +68,18 @@ class WebSocketService {
 
   // --- Gestión de Callbacks ---
   
-  addCallbacks(newMessageCallback) {
-    this.callbacks['new_message'] = newMessageCallback;
+  addCallbacks(newCallbacks) {
+    if (typeof newCallbacks === 'function') {
+      this.callbacks['message'] = newCallbacks;
+      return;
+    }
+    this.callbacks = { ...this.callbacks, ...newCallbacks };
   }
 
   socketNewMessage(data) {
     const parsedData = JSON.parse(data);
-    const callback = this.callbacks['new_message'];
+    const msgType = parsedData.type || 'message';
+    const callback = this.callbacks[msgType] || this.callbacks['message'] || this.callbacks['*'];
     if (callback) {
       callback(parsedData);
     }

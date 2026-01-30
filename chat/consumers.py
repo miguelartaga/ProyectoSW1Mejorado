@@ -17,7 +17,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Obtenemos el usuario. Gracias a AuthMiddlewareStack en asgi.py
         self.user = self.scope['user']
 
-        # Rechazar conexiÃ³n si el usuario no estÃ¡ autenticado
+        # Rechazar conexión si el usuario no está autenticado
         if not self.user.is_authenticated:
             await self.close()
             return
@@ -28,9 +28,68 @@ class ChatConsumer(AsyncWebsocketConsumer):
             self.channel_name
         )
         
-        # 2. Aceptar la conexiÃ³n WebSocket
+        # 2. Aceptar la conexión WebSocket
         await self.accept()
         print(f"Usuario {self.user.username} conectado a la sala: {self.room_name}")
+    
+    async def receive(self, text_data):
+        data = json.loads(text_data)
+        message_type = data.get('type', 'message')
+
+        if message_type == 'signal':
+            # Se?alizaci?n WebRTC: offer/answer/ice/hangup
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'signal_message',
+                    'signal': data,
+                    'username': self.user.username
+                }
+            )
+            return
+
+        if message_type == 'transcript':
+            # Transcripci?n para traducci?n en vivo
+            transcript = data.get('message', '')
+            if not transcript:
+                return
+            source_language = await self.get_user_language(self.user)
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'transcript_message',
+                    'message': transcript,
+                    'username': self.user.username,
+                    'source_lang': source_language
+                }
+            )
+            return
+
+        # Mensaje de chat normal
+        message = data.get('message', '')
+        if not message:
+            return
+
+        can_send = await self.check_message_limit(self.user)
+        if not can_send:
+            await self.send(text_data=json.dumps({
+                'type': 'message',
+                'message': "L?mite diario alcanzado (10 msgs). Actualiza tu Plan a Premium para continuar.",
+                'username': "Sistema"
+            }))
+            return
+
+        source_language = await self.get_user_language(self.user)
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'chat_message',
+                'message': message,
+                'username': self.user.username,
+                'source_lang': source_language
+            }
+        )
 
 
     async def disconnect(self, close_code):
@@ -41,33 +100,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
         print(f"Usuario {self.user.username} desconectado de la sala: {self.room_name}")
 
-
-    # 3. Esta funciÃ³n se llama cuando recibimos un mensaje del cliente (Frontend)
-    async def receive(self, text_data):
-        data = json.loads(text_data)
-        message = data['message']
-
-        can_send = await self.check_message_limit(self.user)
-        if not can_send:
-            await self.send(text_data=json.dumps({
-                'message': "Límite diario alcanzado (10 msgs). Actualiza tu Plan a Premium para continuar.",
-                'username': "Sistema"
-            }))
-            return
-        
-        # Obtenemos el idioma de origen del usuario que envÃ­a
-        source_language = await self.get_user_language(self.user)
-
-        # Enviar el mensaje al grupo (esto llamarÃ¡ a la funciÃ³n 'chat_message')
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'chat_message', # Llama a la funciÃ³n chat_message
-                'message': message,
-                'username': self.user.username,
-                'source_lang': source_language
-            }
-        )
 
     @sync_to_async
     def check_message_limit(self, user):
@@ -117,8 +149,40 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # 6. Enviar el mensaje (traducido o no) de vuelta al frontend de este usuario
         await self.send(text_data=json.dumps({
+            'type': 'message',
             'message': translated_text,
             'username': username
+        }))
+
+
+    async def signal_message(self, event):
+        signal = event['signal']
+        username = event['username']
+        await self.send(text_data=json.dumps({
+            'type': 'signal',
+            'signal': signal,
+            'username': username
+        }))
+
+    async def transcript_message(self, event):
+        message = event['message']
+        username = event['username']
+        source_lang = event['source_lang']
+
+        target_language = await self.get_user_language(self.scope['user'])
+        translated_text = message
+        if source_lang != target_language:
+            translation_result = await self.perform_translation(message, target_language, source_lang)
+            if 'error' not in translation_result:
+                translated_text = translation_result['translated_text']
+
+        await self.send(text_data=json.dumps({
+            'type': 'live_translation',
+            'message': translated_text,
+            'username': username,
+            'source_lang': source_lang,
+            'target_lang': target_language,
+            'original': message
         }))
 
     # --- Funciones de Ayuda ---

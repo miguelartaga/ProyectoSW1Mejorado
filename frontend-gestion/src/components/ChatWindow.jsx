@@ -1,6 +1,6 @@
 import { ActionIcon, Avatar, Box, Group, Paper, ScrollArea, Text, TextInput, Transition } from '@mantine/core';
 import { useClipboard } from '@mantine/hooks';
-import { IconCheck, IconCopy, IconMessageChatbot, IconMicrophone, IconMicrophoneOff, IconSend, IconVolume, IconX } from '@tabler/icons-react';
+import { IconCheck, IconCopy, IconMessageChatbot, IconMicrophone, IconMicrophoneOff, IconSend, IconVolume, IconX, IconPhone, IconPhoneOff, IconLanguage } from '@tabler/icons-react';
 import { useEffect, useRef, useState } from 'react';
 import { getProfile } from '../api/authService';
 import WebSocketInstance from '../api/socketService';
@@ -17,7 +17,17 @@ const ChatWindow = ({ roomName, onClose }) => {
   const { user } = useAuth();
   const clipboard = useClipboard({ timeout: 2000 });
 
-  const { isListening, transcript, startListening, stopListening, hasSupport } = useSpeechRecognition();
+  const { isListening, transcript, startListening, stopListening, hasSupport } = useSpeechRecognition({
+    lang: myLanguage,
+    continuous: true,
+    interimResults: false,
+  });
+
+  const [callActive, setCallActive] = useState(false);
+  const [liveTranslateEnabled, setLiveTranslateEnabled] = useState(false);
+  const pcRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const remoteAudioRef = useRef(null);
 
   // Obtener idioma preferido del usuario para la voz
   useEffect(() => {
@@ -40,13 +50,16 @@ const ChatWindow = ({ roomName, onClose }) => {
   }, []);
 
   useEffect(() => {
-    if (transcript) {
-      setInputValue((prev) => {
-        const spacer = prev.length > 0 && !prev.endsWith(' ') ? ' ' : '';
-        return prev + spacer + transcript;
-      });
+    if (!transcript) return;
+    if (callActive && liveTranslateEnabled) {
+      WebSocketInstance.sendMessage({ type: 'transcript', message: transcript });
+      return;
     }
-  }, [transcript]);
+    setInputValue((prev) => {
+      const spacer = prev.length > 0 && !prev.endsWith(' ') ? ' ' : '';
+      return prev + spacer + transcript;
+    });
+  }, [transcript, callActive, liveTranslateEnabled]);
 
   // FunciÃ³n para leer texto (Solo manual ahora)
   const speakMessage = (text) => {
@@ -59,20 +72,141 @@ const ChatWindow = ({ roomName, onClose }) => {
   };
 
   // ConexiÃ³n WebSocket
+  const createPeerConnection = () => {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    });
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        WebSocketInstance.sendMessage({
+          type: 'signal',
+          signal_type: 'ice',
+          candidate: event.candidate,
+        });
+      }
+    };
+    pc.ontrack = (event) => {
+      const [stream] = event.streams;
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = stream;
+      }
+      setCallActive(true);
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        endCall(false);
+      }
+    };
+    return pc;
+  };
+
+  const ensureLocalStream = async () => {
+    if (localStreamRef.current) return localStreamRef.current;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    localStreamRef.current = stream;
+    return stream;
+  };
+
+  const startCall = async () => {
+    if (callActive) return;
+    const stream = await ensureLocalStream();
+    const pc = createPeerConnection();
+    pcRef.current = pc;
+    stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    WebSocketInstance.sendMessage({
+      type: 'signal',
+      signal_type: 'offer',
+      sdp: offer,
+    });
+    setCallActive(true);
+  };
+
+  const endCall = (sendSignal = true) => {
+    if (sendSignal) {
+      WebSocketInstance.sendMessage({ type: 'signal', signal_type: 'hangup' });
+    }
+    if (pcRef.current) {
+      pcRef.current.onicecandidate = null;
+      pcRef.current.ontrack = null;
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+    }
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
+    }
+    setCallActive(false);
+  };
+
+  const handleSignal = async (data) => {
+    if (data.username === user?.username) return;
+    const signal = data.signal || {};
+    const signalType = signal.signal_type;
+    if (!signalType) return;
+
+    if (signalType === 'offer') {
+      const stream = await ensureLocalStream();
+      const pc = createPeerConnection();
+      pcRef.current = pc;
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      WebSocketInstance.sendMessage({
+        type: 'signal',
+        signal_type: 'answer',
+        sdp: answer,
+      });
+      setCallActive(true);
+      return;
+    }
+
+    if (signalType === 'answer' && pcRef.current) {
+      await pcRef.current.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+      return;
+    }
+
+    if (signalType === 'ice' && pcRef.current && signal.candidate) {
+      try {
+        await pcRef.current.addIceCandidate(new RTCIceCandidate(signal.candidate));
+      } catch (err) {
+        console.error('ICE error', err);
+      }
+      return;
+    }
+
+    if (signalType === 'hangup') {
+      endCall(false);
+    }
+  };
+
+  const handleLiveTranslation = (data) => {
+    setMessages((prev) => [...prev, data]);
+    if (callActive && liveTranslateEnabled && data.username !== user?.username) {
+      speakMessage(data.message);
+    }
+  };
+
   useEffect(() => {
     if (roomName) {
       setOpened(true);
       WebSocketInstance.connect(roomName);
-      
-      WebSocketInstance.addCallbacks((data) => {
-        setMessages((prev) => [...prev, data]);
-        
+      WebSocketInstance.addCallbacks({
+        message: (data) => setMessages((prev) => [...prev, data]),
+        signal: handleSignal,
+        live_translation: handleLiveTranslation,
       });
     }
     
     return () => {
       WebSocketInstance.disconnect();
       if (isListening) stopListening();
+      endCall(false);
       window.speechSynthesis.cancel();
     };
   }, [roomName]); 
@@ -96,6 +230,16 @@ const ChatWindow = ({ roomName, onClose }) => {
     setOpened(false);
     setTimeout(() => { if (onClose) onClose(); }, 300);
   };
+
+  useEffect(() => {
+    if (!callActive || !liveTranslateEnabled) {
+      if (isListening) stopListening();
+      return;
+    }
+    if (hasSupport && !isListening) {
+      startListening();
+    }
+  }, [callActive, liveTranslateEnabled, hasSupport, isListening]);
 
   return (
     <Transition transition="slide-up" mounted={opened}>
@@ -122,7 +266,15 @@ const ChatWindow = ({ roomName, onClose }) => {
                 </Group>
               </Box>
             </Group>
-            <ActionIcon variant="transparent" c="white" onClick={handleClose}><IconX /></ActionIcon>
+            <Group gap="xs">
+              <ActionIcon variant="transparent" c="white" onClick={callActive ? () => endCall(true) : startCall}>
+                {callActive ? <IconPhoneOff /> : <IconPhone />}
+              </ActionIcon>
+              <ActionIcon variant="transparent" c={liveTranslateEnabled ? "yellow" : "white"} onClick={() => setLiveTranslateEnabled((v) => !v)}>
+                <IconLanguage />
+              </ActionIcon>
+              <ActionIcon variant="transparent" c="white" onClick={handleClose}><IconX /></ActionIcon>
+            </Group>
           </Group>
 
           {/* Ãrea de Mensajes */}
@@ -160,13 +312,17 @@ const ChatWindow = ({ roomName, onClose }) => {
                           </ActionIcon>
                       </Group>
                     )}
-                    <Text size="sm">{msg.message}</Text>
+                    <Text size="sm">
+                      {msg.type === 'live_translation' ? '🗣️ ' : ''}
+                      {msg.message}
+                    </Text>
                   </Box>
                 </Box>
               );
             })}
           </ScrollArea>
 
+          <audio ref={remoteAudioRef} autoPlay />
           {/* Input Area */}
           <Box p="md" style={{ borderTop: '1px solid #eee' }}>
             <Group gap="xs">

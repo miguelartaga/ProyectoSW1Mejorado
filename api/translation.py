@@ -1,31 +1,44 @@
-from googletrans import Translator, LANGUAGES
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+import google.generativeai as genai
+
+# Cargar .env del proyecto
+load_dotenv(Path(__file__).resolve().parent.parent / '.env')
+
 # 1. No necesitamos importar asyncio
 
 def translate_text(text, target_language, source_language=None):
     """
-    Traduce un texto usando la librería googletrans (versión síncrona).
+    Traduce un texto usando Gemini.
     """
-    # Validar que el idioma de destino sea válido
-    if target_language not in LANGUAGES:
-        return {'error': f"El idioma de destino '{target_language}' no es válido."}
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        return {'error': 'GEMINI_API_KEY no esta configurada.'}
 
-    # --- INICIO DE LA CORRECCIÓN ---
-    # La librería es síncrona. Eliminamos async/await.
     try:
-        translator = Translator()
-        
-        # Simplemente llamamos a la función, sin 'await'
-        if source_language and source_language in LANGUAGES:
-            translation = translator.translate(text, dest=target_language, src=source_language)
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        if source_language:
+            prompt = (
+                f"Translate the following text to {target_language}. "
+                f"Source language: {source_language}. "
+                "Respond with only the translated text."
+            )
         else:
-            translation = translator.translate(text, dest=target_language)
+            prompt = (
+                f"Translate the following text to {target_language}. "
+                "Respond with only the translated text."
+            )
+
+        response = model.generate_content(f"{prompt}\n\n{text}")
+        translated_text = getattr(response, 'text', None)
+        if not translated_text:
+            return {'error': 'Gemini devolvio una respuesta vacia.'}
 
         return {
-            'translated_text': translation.text,
-            'detected_source_language': translation.src
+            'translated_text': translated_text.strip(),
+            'detected_source_language': source_language or 'unknown'
         }
-    # --- FIN DE LA CORRECCIÓN ---
     except Exception as e:
-        # El error que viste (can't be used in 'await' expression)
-        # se estaba generando aquí.
-        return {'error': f"Ocurrió un error during la traducción: {str(e)}"}
+        return {'error': f"Gemini error: {str(e)}"}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-const useSpeechRecognition = () => {
+const useSpeechRecognition = ({ lang = 'es-ES', continuous = false, interimResults = false } = {}) => {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const recognitionRef = useRef(null);
@@ -11,9 +11,9 @@ const useSpeechRecognition = () => {
     
     if (SpeechRecognition) {
       recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false; // Se detiene al dejar de hablar
-      recognitionRef.current.interimResults = false; // Solo resultados finales
-      recognitionRef.current.lang = 'es-ES'; // Por defecto español (puedes hacerlo dinámico)
+      recognitionRef.current.continuous = continuous;
+      recognitionRef.current.interimResults = interimResults;
+      recognitionRef.current.lang = lang; // Por defecto español (puedes hacerlo dinámico)
 
       recognitionRef.current.onstart = () => {
         setIsListening(true);
@@ -35,6 +35,14 @@ const useSpeechRecognition = () => {
       };
     }
   }, []);
+  useEffect(() => {
+    if (recognitionRef.current) {
+      recognitionRef.current.lang = lang;
+      recognitionRef.current.continuous = continuous;
+      recognitionRef.current.interimResults = interimResults;
+    }
+  }, [lang, continuous, interimResults]);
+
 
   const startListening = () => {
     if (recognitionRef.current && !isListening) {
